@@ -315,25 +315,27 @@ class CompositeMaterialsApp:
 
         # Treeview
         self.failure_grid = ttk.Treeview(self.layup_failure_frame,
-                                      columns=("Ply Number", "Orientation", "F.I.x", "F.I.y", "MOF"),
+                                      columns=("Ply Number", "Orientation", "FI x", "FI y", "FI s", "MOF"),
                                       show="headings")
         self.failure_grid.heading("Ply Number", text="#")
         self.failure_grid.heading("Orientation", text="Orientation (deg)")
-        self.failure_grid.heading("F.I.x", text="F.I.x")
-        self.failure_grid.heading("F.I.y", text="F.I.y")
+        self.failure_grid.heading("FI x", text="FI x")
+        self.failure_grid.heading("FI y", text="FI y")
+        self.failure_grid.heading("FI s", text="FI s")
         self.failure_grid.heading("MOF", text="MOF")
         self.failure_grid.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         # Center the text in the Treeview cells
-        for column in ("Ply Number", "Orientation", "F.I.x", "F.I.y", "MOF"):
+        for column in ("Ply Number", "Orientation", "FI x", "FI y", "FI s", "MOF"):
             self.failure_grid.column(column, anchor="center")
 
         # Set fixed width for each column
         self.failure_grid.column("Ply Number", width=25)
         self.failure_grid.column("Orientation", width=115)  # Adjust the width as needed
-        self.failure_grid.column("F.I.x", width=25)  # Adjust the width as needed
-        self.failure_grid.column("F.I.y", width=25)  # Adjust the width as needed
-        self.failure_grid.column("MOF", width=25)  # Adjust the width as needed
+        self.failure_grid.column("FI x", width=25)
+        self.failure_grid.column("FI y", width=25)
+        self.failure_grid.column("FI s", width=25)
+        self.failure_grid.column("MOF", width=25)
 
         # Add a vertical scrollbar
         failure_scrollbar = ttk.Scrollbar(self.layup_failure_frame, orient="vertical", command=self.failure_grid.yview)
@@ -642,6 +644,8 @@ class CompositeMaterialsApp:
         pass
 
     def calculate(self):
+        self.calculate_failure()
+
         # Check to make sure there is actually a layup
         self.update_layer_count()
 
@@ -1047,11 +1051,123 @@ class CompositeMaterialsApp:
                                      [0, 0, E_s]]) * (10**(9))
 
         epsilon_on_axis = np.array([self.epsilon_x, self.epsilon_y, self.epsilon_s])
-        sigma_on_axis = np.dot(self.on_axis_Q_matrix, epsilon_on_axis) * (10**(-6))
+        self.sigma_on_axis = np.dot(self.on_axis_Q_matrix, epsilon_on_axis) * (10**(-6))
 
-        self.update_tree(self.on_axis_stress_tree, {"sigma_x": "{:.{sf}e}".format(sigma_on_axis[0], sf=3 - 1),
-                "sigma_y": "{:.{sf}e}".format(sigma_on_axis[1], sf=3 - 1),
-                "sigma_s": "{:.{sf}e}".format(sigma_on_axis[2], sf=3 - 1)})
+        self.update_tree(self.on_axis_stress_tree, {"sigma_x": "{:.{sf}e}".format(self.sigma_on_axis[0], sf=3 - 1),
+                "sigma_y": "{:.{sf}e}".format(self.sigma_on_axis[1], sf=3 - 1),
+                "sigma_s": "{:.{sf}e}".format(self.sigma_on_axis[2], sf=3 - 1)})
+
+    def calculate_failure(self):
+        # Check to make sure there is actually a layup
+        self.update_layer_count()
+
+        if self.layer_count <= 0:
+            # Display popup message
+            messagebox.showerror("Error", "There is nothing to calculate.")
+            return  # Exit the function
+
+        # Layup properties
+        self.calculate_and_update_off_axis_A_and_a()
+        self.calculate_and_update_off_axis_D_and_d()
+
+        for item in self.data_grid.get_children():
+
+            # Get the selected ply
+            selected_item = item
+
+            # Retrieve data from the selected item
+            selected_material = self.data_grid.item(selected_item, 'values')[1]
+            selected_orientation = self.data_grid.item(selected_item, 'values')[3]
+            selected_layer_number = self.data_grid.item(selected_item, 'values')[0]
+
+            # Update the material properties
+            material_properties = mp.get_material_properties(selected_material)
+            self.update_tree(self.material_properties_tree, material_properties)
+
+            # Update the strength properties
+            strength_properties = mp.get_strength_properties(selected_material)
+            self.update_tree(self.strength_tree, strength_properties)
+
+            X_t = strength_properties["X_t"]
+            X_c = strength_properties["X_c"]
+            Y_t = strength_properties["Y_t"]
+            Y_c = strength_properties["Y_c"]
+            S_c = strength_properties["S_c"]
+
+            # Calculate on-axis
+            self.calculate_and_update_on_axis_Q_and_S(selected_material)
+
+            # Calculate off-axis
+            self.calculate_and_update_off_axis_Q_and_S(selected_material, selected_orientation)
+
+            # z-coordinates of each ply
+            self.get_ply_z_coordinates()
+
+            if len(self.z_coordinate) <= 0:
+                # Display warning message
+                messagebox.showwarning("Warning", "Not enough layers to calculate the strain or stress!")
+                return  # Exit the function
+
+            # Calculate off-axis strain
+            self.calculate_off_axis_strain(selected_layer_number, self.N_1, self.N_2, self.N_6, self.M_1, self.M_2,
+                                           self.M_6)
+
+            # Then calculate on-axis strain for the selected layer
+            self.calculate_on_axis_strain(selected_orientation)
+
+            # Then calculate the on-axis stress for the selected layer
+            self.calculate_on_axis_stress(selected_material)
+
+            if self.sigma_on_axis[0] <= 0:
+                self.FI_x = -self.sigma_on_axis[0] / X_c
+            elif self.sigma_on_axis[0] > 0:
+                self.FI_x = self.sigma_on_axis[0] / X_t
+
+            if self.sigma_on_axis[1] <= 0:
+                self.FI_y = -self.sigma_on_axis[1] / Y_c
+            elif self.sigma_on_axis[1] > 0:
+                self.FI_y = self.sigma_on_axis[1] / Y_t
+
+            if self.sigma_on_axis[2] <= 0:
+                self.FI_s = -self.sigma_on_axis[2] / S_c
+            elif self.sigma_on_axis[2] > 0:
+                self.FI_s = self.sigma_on_axis[2] / S_c
+
+            print(self.FI_s)
+
+            self.MOF = ""
+
+            if self.FI_x >= 1:
+                if self.sigma_on_axis[0] <= 0:
+                    self.MOF = "LC"
+                elif self.sigma_on_axis[0] > 0:
+                    self.MOF = "LT"
+            elif self.FI_y >= 1:
+                if self.sigma_on_axis[1] <= 0:
+                    self.MOF = "TC"
+                elif self.sigma_on_axis[1] > 0:
+                    self.MOF = "TT"
+            elif self.FI_s >= 1:
+                self.MOF = "S"
+
+            # Extracting data
+            data = {
+                "Ply Number": selected_layer_number,
+                "Orientation": selected_orientation,
+                "FI x": "{:.2f}".format(self.FI_x),
+                "FI y": "{:.2f}".format(self.FI_y),
+                "FI s": "{:.2f}".format(self.FI_s),
+                "MOF": self.MOF
+            }
+            # Inserting data into the treeview
+            self.failure_grid.insert("", "end", values=(
+                data["Ply Number"],
+                data["Orientation"],
+                data["FI x"],
+                data["FI y"],
+                data["FI s"],
+                data["MOF"]
+            ))
 
     def setup_matrix(self, parent, matrix_name, row_labels=None, column_labels=None, units=None):
         # Matrix Labels
