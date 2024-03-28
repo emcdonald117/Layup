@@ -8,6 +8,7 @@ def get_material_properties(ply_type):
         "AS/H3501": {"E_x": 138, "E_y": 8.96, "E_s": 7.10, "ν": 0.30},
         "Scotchply 1002": {"E_x": 38.6, "E_y": 8.27, "E_s": 4.14, "ν": 0.26},
         "Kevlar49/epoxy": {"E_x": 76, "E_y": 5.50, "E_s": 2.30, "ν": 0.34},
+        "Broken layer": {"E_x": 0, "E_y": 0, "E_s": 0, "ν": 0.5}
     }
 
     return material_properties.get(ply_type, {})
@@ -20,6 +21,7 @@ def get_strength_properties(ply_type):
         "AS/H3501": {"X_t": 1447, "Y_t": 51.7, "X_c": 1447, "Y_c": 206, "S_c": 93},
         "Scotchply 1002": {"X_t": 1062, "Y_t": 31, "X_c": 610, "Y_c": 118, "S_c": 72},
         "Kevlar49/epoxy": {"X_t": 1400, "Y_t": 12, "X_c": 235, "Y_c": 53, "S_c": 34},
+        "Broken layer": {"X_t": 1, "Y_t": 1, "X_c": 1, "Y_c": 1, "S_c": 1},
     }
 
     return strength_properties.get(ply_type, {})

@@ -184,7 +184,7 @@ class CompositeMaterialsApp:
         self.material_var = tk.StringVar()
         self.material_dropdown = ttk.Combobox(self.layup_creation_tab, textvariable=self.material_var,
                                               values=["T300/5208", "B4/5505", "AS/H3501", "Scotchply 1002",
-                                                      "Kevlar49/epoxy"], state="readonly")
+                                                      "Kevlar49/epoxy", "Broken layer"], state="readonly")
         self.material_dropdown.grid(row=1, column=1, padx=5, pady=5, sticky="w")
 
         # Ply thickness
@@ -215,8 +215,8 @@ class CompositeMaterialsApp:
                                                  command=self.toggle_core)
         self.has_core_checkbox.grid(row=0, column=1, pady=5, sticky="w")
 
-        # Core thickness
-        self.core_thickness_label = ttk.Label(self.layup_options_tab, text="Core Thickness (mm):")
+        # Core half-thickness
+        self.core_thickness_label = ttk.Label(self.layup_options_tab, text="Core Half-Thickness (mm):")
         self.core_thickness_label.grid(row=1, column=0, padx=5, pady=5, sticky="w")
         self.core_thickness_var = tk.StringVar()
         self.core_thickness_entry = ttk.Entry(self.layup_options_tab, textvariable=self.core_thickness_var,
@@ -566,10 +566,10 @@ class CompositeMaterialsApp:
             try:
                 core_thickness = float(core_thickness_str)
                 if core_thickness < 0:
-                    messagebox.showerror("Error", "Core Thickness must be greater than or equal to zero.")
+                    messagebox.showerror("Error", "Core Half-Thickness must be greater than or equal to zero.")
                     return
             except ValueError:
-                messagebox.showerror("Error", "Core Thickness must be a number.")
+                messagebox.showerror("Error", "Core Half-Thickness must be a number.")
                 return
         else:
             core_thickness = None
@@ -625,6 +625,10 @@ class CompositeMaterialsApp:
             self.update_ply_numbers()
             self.update_layer_count()  # Add this line to update the layer count
 
+            # Delete all entries in the Treeview
+            for item in self.failure_grid.get_children():
+                self.failure_grid.delete(item)
+
     def delete_all_entries(self):
         # Ask for confirmation before deleting all entries
         confirmed = messagebox.askyesno("Delete All Entries", "Are you sure you want to delete all entries?")
@@ -635,6 +639,10 @@ class CompositeMaterialsApp:
         for item in self.data_grid.get_children():
             self.data_grid.delete(item)
 
+        # Delete all entries in the Treeview
+        for item in self.failure_grid.get_children():
+            self.failure_grid.delete(item)
+
         # Update ply numbers
         self.update_ply_numbers()
         self.update_layer_count()
@@ -644,8 +652,6 @@ class CompositeMaterialsApp:
         pass
 
     def calculate(self):
-        self.calculate_failure()
-
         # Check to make sure there is actually a layup
         self.update_layer_count()
 
@@ -653,6 +659,14 @@ class CompositeMaterialsApp:
             # Display popup message
             messagebox.showerror("Error", "There is nothing to calculate.")
             return  # Exit the function
+
+        if self.layer_count % 2 != 0:
+            # Display popup message
+            messagebox.showerror("Error", "Currently, only symmetric layups with an even number of layers"
+                                          "are supported.")
+            return  # Exit the function
+
+        self.calculate_failure()
 
         # Layup properties
         self.calculate_and_update_off_axis_A_and_a()
@@ -695,6 +709,9 @@ class CompositeMaterialsApp:
                 messagebox.showwarning("Warning", "Not enough layers to calculate the strain or stress!")
                 return  # Exit the function
 
+            # Check which side the user would like to calculate on
+            self.layer_side = self.layer_side_var.get()
+
             # Calculate off-axis strain
             self.calculate_off_axis_strain(selected_layer_number, self.N_1, self.N_2, self.N_6, self.M_1, self.M_2,
                                            self.M_6)
@@ -722,15 +739,19 @@ class CompositeMaterialsApp:
         nu = material_properties["ν"]
 
         # Calculate coefficients for Q matrix
-        nu_y = (E_y / E_x) * nu
-        nu_x = nu
-        m = (1 - nu * nu_y) ** -1
+        if E_x != 0:
+            nu_y = (E_y / E_x) * nu
+            nu_x = nu
+            m = (1 - nu * nu_y) ** -1
 
-        self.on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
-                                     [m*nu_y*E_x, m*E_y, 0],
-                                     [0, 0, E_s]])
+            self.on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
+                                         [m*nu_y*E_x, m*E_y, 0],
+                                         [0, 0, E_s]])
 
-        self.on_axis_S_matrix = np.linalg.inv(self.on_axis_Q_matrix)
+            self.on_axis_S_matrix = np.linalg.inv(self.on_axis_Q_matrix)
+        else:
+            self.on_axis_Q_matrix = np.zeros((3,3))
+            self.on_axis_S_matrix = np.zeros((3,3))
 
         for index, values in np.ndenumerate(self.on_axis_Q_matrix):
             self.update_entry(self.on_axis_Q_matrix_entries[index[0]][index[1]],
@@ -772,7 +793,10 @@ class CompositeMaterialsApp:
                                            [temp_off_axis_Q[2], temp_off_axis_Q[1], temp_off_axis_Q[5]],
                                            [temp_off_axis_Q[4], temp_off_axis_Q[5], temp_off_axis_Q[3]]])
 
-        self.off_axis_S_matrix = np.linalg.inv(self.off_axis_Q_matrix)
+        if Q_xx != 0:
+            self.off_axis_S_matrix = np.linalg.inv(self.off_axis_Q_matrix)
+        else:
+            self.off_axis_S_matrix = np.zeros((3,3))
 
         for index, values in np.ndenumerate(self.off_axis_Q_matrix):
             self.update_entry(self.off_axis_Q_matrix_entries[index[0]][index[1]],
@@ -803,13 +827,17 @@ class CompositeMaterialsApp:
         nu = material_properties["ν"]
 
         # Calculate coefficients for Q matrix
-        nu_y = (E_y / E_x) * nu
-        nu_x = nu
-        m = (1 - nu_x * nu_y) ** -1
+        if E_x != 0:
+            nu_y = (E_y / E_x) * nu
+            nu_x = nu
+            m = (1 - nu * nu_y) ** -1
 
-        on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
-                                     [m*nu_y*E_x, m*E_y, 0],
-                                     [0, 0, E_s]])
+            on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
+                                         [m*nu_y*E_x, m*E_y, 0],
+                                         [0, 0, E_s]])
+
+        else:
+            on_axis_Q_matrix = np.zeros((3,3))
 
         Q_xx = on_axis_Q_matrix[0][0]
         Q_xy = on_axis_Q_matrix[0][1]
@@ -863,7 +891,10 @@ class CompositeMaterialsApp:
                                            [temp_off_axis_A[2], temp_off_axis_A[1], temp_off_axis_A[5]],
                                            [temp_off_axis_A[4], temp_off_axis_A[5], temp_off_axis_A[3]]])
 
-        self.off_axis_a_matrix = np.linalg.inv(self.off_axis_A_matrix)
+        if E_x != 0:
+            self.off_axis_a_matrix = np.linalg.inv(self.off_axis_A_matrix)
+        else:
+            self.off_axis_a_matrix = np.zeros((3, 3))
 
         for index, values in np.ndenumerate(self.off_axis_A_matrix):
             self.update_entry(self.off_axis_A_matrix_entries[index[0]][index[1]],
@@ -894,13 +925,17 @@ class CompositeMaterialsApp:
         nu = material_properties["ν"]
 
         # Calculate coefficients for Q matrix
-        nu_y = (E_y / E_x) * nu
-        nu_x = nu
-        m = (1 - nu_x * nu_y) ** -1
+        if E_x != 0:
+            nu_y = (E_y / E_x) * nu
+            nu_x = nu
+            m = (1 - nu * nu_y) ** -1
 
-        on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
-                                     [m*nu_y*E_x, m*E_y, 0],
-                                     [0, 0, E_s]])
+            on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
+                                         [m*nu_y*E_x, m*E_y, 0],
+                                         [0, 0, E_s]])
+
+        else:
+            on_axis_Q_matrix = np.zeros((3,3))
 
         Q_xx = on_axis_Q_matrix[0][0]
         Q_xy = on_axis_Q_matrix[0][1]
@@ -960,7 +995,10 @@ class CompositeMaterialsApp:
                                            [temp_off_axis_D[2], temp_off_axis_D[1], temp_off_axis_D[5]],
                                            [temp_off_axis_D[4], temp_off_axis_D[5], temp_off_axis_D[3]]])
 
-        self.off_axis_d_matrix = np.linalg.inv(self.off_axis_D_matrix)
+        if E_x != 0:
+            self.off_axis_d_matrix = np.linalg.inv(self.off_axis_D_matrix)
+        else:
+            self.off_axis_d_matrix = np.zeros((3, 3))
 
         for index, values in np.ndenumerate(self.off_axis_D_matrix):
             self.update_entry(self.off_axis_D_matrix_entries[index[0]][index[1]],
@@ -980,12 +1018,11 @@ class CompositeMaterialsApp:
 
         curvature_vector = np.dot(self.off_axis_d_matrix, M_vector)
 
-        if self.layer_side_var.get() == "Outer":
+        if self.layer_side == "Outer":
             offset = 0
-        elif self.layer_side_var.get() == "Inner":
+        elif self.layer_side == "Inner":
             offset = self.selected_layer_thickness[int(layer_number) - 1]
-            print(offset)
-        elif self.layer_side_var.get() == "Middle":
+        elif self.layer_side == "Middle":
             offset = self.selected_layer_thickness[int(layer_number) - 1]/2.0
 
         current_z_coordinate = self.z_coordinate[int(layer_number) - 1]
@@ -1041,14 +1078,20 @@ class CompositeMaterialsApp:
         E_s = material_properties["E_s"]
         nu = material_properties["ν"]
 
-        # Calculate coefficients for Q matrix
-        nu_y = (E_y / E_x) * nu
-        nu_x = nu
-        m = (1 - nu * nu_y) ** -1
 
-        self.on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
-                                     [m*nu_y*E_x, m*E_y, 0],
-                                     [0, 0, E_s]]) * (10**(9))
+        # Calculate coefficients for Q matrix
+        if E_x != 0:
+            nu_y = (E_y / E_x) * nu
+            nu_x = nu
+            m = (1 - nu * nu_y) ** -1
+
+            self.on_axis_Q_matrix = np.array([[m*E_x, m*nu_y*E_x, 0],
+                                         [m*nu_y*E_x, m*E_y, 0],
+                                         [0, 0, E_s]]) * (10**(9))
+
+        else:
+            self.on_axis_Q_matrix = np.zeros((3,3))
+
 
         epsilon_on_axis = np.array([self.epsilon_x, self.epsilon_y, self.epsilon_s])
         self.sigma_on_axis = np.dot(self.on_axis_Q_matrix, epsilon_on_axis) * (10**(-6))
@@ -1058,17 +1101,15 @@ class CompositeMaterialsApp:
                 "sigma_s": "{:.{sf}e}".format(self.sigma_on_axis[2], sf=3 - 1)})
 
     def calculate_failure(self):
-        # Check to make sure there is actually a layup
-        self.update_layer_count()
-
-        if self.layer_count <= 0:
-            # Display popup message
-            messagebox.showerror("Error", "There is nothing to calculate.")
-            return  # Exit the function
-
         # Layup properties
         self.calculate_and_update_off_axis_A_and_a()
         self.calculate_and_update_off_axis_D_and_d()
+
+        self.layer_side = "Middle"
+
+        # Delete all entries in the Treeview
+        for item in self.failure_grid.get_children():
+            self.failure_grid.delete(item)
 
         for item in self.data_grid.get_children():
 
@@ -1118,6 +1159,8 @@ class CompositeMaterialsApp:
             # Then calculate the on-axis stress for the selected layer
             self.calculate_on_axis_stress(selected_material)
 
+            print(self.sigma_on_axis[0])
+
             if self.sigma_on_axis[0] <= 0:
                 self.FI_x = -self.sigma_on_axis[0] / X_c
             elif self.sigma_on_axis[0] > 0:
@@ -1132,8 +1175,6 @@ class CompositeMaterialsApp:
                 self.FI_s = -self.sigma_on_axis[2] / S_c
             elif self.sigma_on_axis[2] > 0:
                 self.FI_s = self.sigma_on_axis[2] / S_c
-
-            print(self.FI_s)
 
             self.MOF = ""
 
@@ -1154,9 +1195,9 @@ class CompositeMaterialsApp:
             data = {
                 "Ply Number": selected_layer_number,
                 "Orientation": selected_orientation,
-                "FI x": "{:.2f}".format(self.FI_x),
-                "FI y": "{:.2f}".format(self.FI_y),
-                "FI s": "{:.2f}".format(self.FI_s),
+                "FI x": "{:.3f}".format(self.FI_x),
+                "FI y": "{:.3f}".format(self.FI_y),
+                "FI s": "{:.3f}".format(self.FI_s),
                 "MOF": self.MOF
             }
             # Inserting data into the treeview
@@ -1168,6 +1209,8 @@ class CompositeMaterialsApp:
                 data["FI s"],
                 data["MOF"]
             ))
+
+        #self.layer_side_dropdown.current(0)
 
     def setup_matrix(self, parent, matrix_name, row_labels=None, column_labels=None, units=None):
         # Matrix Labels
@@ -1209,8 +1252,7 @@ class CompositeMaterialsApp:
         self.layer_count = len(self.data_grid.get_children())
 
         # Update the tab label with the layer count
-        current_tab = self.layup_notebook.index(self.layup_notebook.select())
-        self.layup_notebook.tab(current_tab, text=f"Layer Count: {self.layer_count}")
+        self.layup_notebook.tab(self.layup_tab, text=f"Layer Count: {self.layer_count}")
 
     def update_ply_numbers(self):
         for index, item in enumerate(self.data_grid.get_children()):
@@ -1243,9 +1285,11 @@ class CompositeMaterialsApp:
 
         # Reverse the z-coordinate array
         self.z_coordinate[:num_layers_half] = np.flip(self.z_coordinate[:num_layers_half])
+        self.selected_layer_thickness[:num_layers_half] = np.flip(self.selected_layer_thickness[:num_layers_half])
 
         # Concatenate the negative of the array
         self.z_coordinate[num_layers_half:] = -np.flip(self.z_coordinate[:num_layers_half])
+        self.selected_layer_thickness[num_layers_half:] = np.flip(self.selected_layer_thickness[:num_layers_half])
 
     def update_tree(self, tree, data):
         # Clear existing data
